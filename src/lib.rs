@@ -138,12 +138,7 @@ fn check_egui_wants_focus(
 }
 
 fn do_camera_zoom(
-    mut query: Query<(
-        &PanCam,
-        &Camera,
-        &mut OrthographicProjection,
-        &mut Transform,
-    )>,
+    mut query: Query<(&PanCam, &Camera, &mut Projection, &mut Transform)>,
     scroll_events: EventReader<MouseWheel>,
     primary_window: Query<&Window, With<PrimaryWindow>>,
 ) {
@@ -154,22 +149,26 @@ fn do_camera_zoom(
         return;
     }
 
-    let Ok(window) = primary_window.get_single() else {
+    let Ok(window) = primary_window.single() else {
         return;
     };
 
-    for (pan_cam, camera, mut proj, mut transform) in &mut query {
+    for (pan_cam, camera, mut projection, mut transform) in &mut query {
         if !pan_cam.enabled {
             continue;
         }
 
         let view_size = camera.logical_viewport_size().unwrap_or(window.size());
 
-        let old_scale = proj.scale;
-        proj.scale *= 1. - scroll_offset * ZOOM_SENSITIVITY;
+        let Projection::Orthographic(ortho) = &mut *projection else {
+            continue;
+        };
+
+        let old_scale = ortho.scale;
+        ortho.scale *= 1. - scroll_offset * ZOOM_SENSITIVITY;
 
         constrain_proj_scale(
-            &mut proj,
+            ortho,
             pan_cam.rect().size(),
             &pan_cam.scale_range(),
             view_size,
@@ -194,20 +193,20 @@ fn do_camera_zoom(
             continue;
         };
 
-        let proj_size = proj.area.max / old_scale;
+        let proj_size = ortho.area.max / old_scale;
 
         let cursor_world_pos =
             transform.translation.truncate() + cursor_normalized_view_pos * proj_size * old_scale;
 
         let proposed_cam_pos =
-            cursor_world_pos - cursor_normalized_view_pos * proj_size * proj.scale;
+            cursor_world_pos - cursor_normalized_view_pos * proj_size * ortho.scale;
 
         // As we zoom out, we don't want the viewport to move beyond the provided
         // boundary. If the most recent change to the camera zoom would move cause
         // parts of the window beyond the boundary to be shown, we need to change the
         // camera position to keep the viewport within bounds.
         transform.translation =
-            clamp_to_safe_zone(proposed_cam_pos, pan_cam.aabb(), proj.area.size())
+            clamp_to_safe_zone(proposed_cam_pos, pan_cam.aabb(), ortho.area.size())
                 .extend(transform.translation.z);
     }
 }
@@ -272,11 +271,11 @@ fn do_camera_movement(
     primary_window: Query<&Window, With<PrimaryWindow>>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     keyboard_buttons: Res<ButtonInput<KeyCode>>,
-    mut query: Query<(&PanCam, &Camera, &mut Transform, &OrthographicProjection)>,
+    mut query: Query<(&PanCam, &Camera, &mut Transform, &Projection)>,
     mut last_pos: Local<Option<Vec2>>,
     time: Res<Time>,
 ) {
-    let Ok(window) = primary_window.get_single() else {
+    let Ok(window) = primary_window.single() else {
         return;
     };
     let window_size = window.size();
@@ -294,7 +293,11 @@ fn do_camera_movement(
             continue;
         }
 
-        let proj_area_size = projection.area.size();
+        let Projection::Orthographic(ortho) = projection else {
+            continue;
+        };
+
+        let proj_area_size = ortho.area.size();
 
         let mouse_delta = if !pan_cam
             .grab_buttons
@@ -310,7 +313,7 @@ fn do_camera_movement(
         let direction = pan_cam.move_keys.direction(&keyboard_buttons);
 
         let keyboard_delta =
-            time.delta_secs() * direction.normalize_or_zero() * pan_cam.speed * projection.scale;
+            time.delta_secs() * direction.normalize_or_zero() * pan_cam.speed * ortho.scale;
         let delta = mouse_delta - keyboard_delta;
 
         if delta == Vec2::ZERO {
